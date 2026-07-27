@@ -41,14 +41,15 @@ library(gt)
 Apresentar a **situação cadastral atual** (Ativa, Suspensa, Inapta, Baixada ou Nula perante
 a Receita Federal) das empresas que passaram pela incubadora da UFAL, a partir dos dados de
 CNPJ extraídos via [Base dos Dados](https://basedosdados.org/), complementados pelo quadro
-societário (sócios) de cada empresa.
+societário, pelo **motivo e data da situação cadastral**, pelo **CNAE fiscal** (setor de
+atuação) e pela **opção por Simples Nacional/MEI** de cada empresa.
 
 ::: {.callout-note appearance="simple"}
-Este relatório foi escrito para rodar sobre os arquivos completos gerados pelo script de
-consulta (`df_completo` e `df_socios`). Por enquanto, ele está apontando para as **amostras**
-enviadas (`df_completo_sample.csv` e `df_socios_sample.csv`), que têm poucas empresas e servem
-apenas para validar a análise — os números abaixo não representam o panorama real da
-incubadora. Basta trocar os caminhos no chunk `importacao` para os arquivos completos.
+Este relatório foi escrito para rodar sobre o arquivo completo gerado pelo script de consulta
+(`df_empresas`). Por enquanto, ele está apontando para a **amostra** enviada
+(`df_empresas_sample.csv`), que tem poucas empresas e serve apenas para validar a análise — os
+números abaixo não representam o panorama real da incubadora. Basta trocar o caminho no chunk
+`importacao` para o arquivo completo.
 :::
 
 ## Importação dos dados
@@ -56,44 +57,46 @@ incubadora. Basta trocar os caminhos no chunk `importacao` para os arquivos comp
 ```{r}
 #| label: importacao
 
-# Ajuste estes dois caminhos para os arquivos completos quando disponíveis
-caminho_completo <- "../data/data_tidy/df_completo.csv"
-caminho_socios   <- "../data/data_tidy/df_socios.csv"
+# Ajuste este caminho para o arquivo completo quando disponível
+caminho_empresas <- "../data/data_tidy/df_empresas.csv"
+# caminho_empresas <- "df_empresas_sample.csv"  # amostra, para validar a análise
 
-# cnpj, numero e demais campos de texto são forçados como caractere para não
-# perder zeros à esquerda nem quebrar em valores como "152 D"
-col_types_completo <- cols(
-  cnpj                = col_character(),
-  nome_fantasia       = col_character(),
-  razao_social        = col_character(),
-  capital_social      = col_double(),
-  situacao_cadastral  = col_character(),
-  logradouro          = col_character(),
-  numero              = col_character(),
-  bairro              = col_character(),
-  sigla_uf            = col_character(),
-  id_municipio        = col_character()
+# Todos os campos de código/identificação são forçados como caractere para não
+# perder zeros à esquerda nem quebrar em joins com os dicionários abaixo.
+# cnae_fiscal_secundaria vem como string separada por vírgula (pode ter mais de
+# um código por empresa) — mantido como texto e tratado na seção de CNAE.
+col_types_empresas <- cols(
+  cnpj                      = col_character(),
+  razao_social              = col_character(),
+  nome_fantasia             = col_character(),
+  nome_socio                = col_character(),
+  tipo_socio                = col_character(),
+  qualificacao_socio        = col_character(),
+  capital_social            = col_double(),
+  sigla_uf                  = col_character(),
+  id_municipio              = col_character(),
+  nome_municipio            = col_character(),
+  situacao_cadastral        = col_character(),
+  data_situacao_cadastral   = col_date(format = ""),
+  motivo_situacao_cadastral = col_character(),
+  cnae_fiscal_principal     = col_character(),
+  cnae_fiscal_secundaria    = col_character(),
+  opcao_simples             = col_character(),
+  data_opcao_simples        = col_date(format = ""),
+  data_exclusao_simples     = col_date(format = ""),
+  opcao_mei                 = col_character(),
+  data_opcao_mei            = col_date(format = ""),
+  data_exclusao_mei         = col_date(format = "")
 )
 
-col_types_socios <- cols(
-  cnpj                = col_character(),
-  razao_social        = col_character(),
-  nome_fantasia       = col_character(),
-  nome_socio          = col_character(),
-  tipo_socio          = col_character(),
-  qualificacao_socio  = col_character(),
-  capital_social      = col_double(),
-  sigla_uf            = col_character()
-)
-
-df_completo <- read_csv(caminho_completo, col_types = col_types_completo)
-df_socios   <- read_csv(caminho_socios,   col_types = col_types_socios)
+df_empresas <- read_csv(caminho_empresas, col_types = col_types_empresas)
 ```
 
 ## Preparação e enriquecimento dos dados
 
-Os campos `situacao_cadastral`, `tipo_socio` e `qualificacao_socio` vêm da Receita Federal
-como códigos numéricos. Traduzimos para rótulos legíveis usando as tabelas oficiais do
+Os campos `situacao_cadastral`, `motivo_situacao_cadastral`, `tipo_socio` e
+`qualificacao_socio` vêm da Receita Federal como códigos numéricos. Traduzimos os mais comuns
+para rótulos legíveis usando o
 [layout de dados abertos do CNPJ](https://www.gov.br/receitafederal/dados/cnpj-metadados.pdf).
 
 ```{r}
@@ -118,6 +121,30 @@ qualificacao_lookup <- tibble(
                           "Titular")
 )
 
+# ATENÇÃO: a tabela oficial de "Motivo Situação Cadastral" tem mais de 60
+# códigos, e fontes secundárias divergem entre si sobre o significado de boa
+# parte deles. Por segurança, só mapeamos aqui os dois códigos confirmados em
+# comprovantes oficiais de CNPJ (código 0, empresas ativas sem motivo
+# registrado, e código 1, a extinção voluntária — o motivo mais comum de
+# baixa). Qualquer outro código aparece como "Código NN": para uma tradução
+# completa e confiável, baixe a tabela oficial (ver seção "Notas técnicas"
+# ao final, que já traz o código pronto para isso).
+motivo_lookup <- tibble(
+  motivo_situacao_cadastral = c("0", "1"),
+  motivo_desc = c(
+    "Sem motivo (situação regular)",
+    "Extinção por encerramento de liquidação voluntária"
+  )
+)
+
+# Opção pelo Simples Nacional / MEI: 1 = optante atualmente, 0 = não optante
+# atualmente (pode já ter sido optante — ver datas de opção/exclusão), NA =
+# não informado.
+simples_mei_lookup <- tibble(
+  opcao = c("1", "0"),
+  opcao_desc = c("Sim", "Não")
+)
+
 # Cores usadas de forma consistente em todos os gráficos e tabelas do relatório
 cores_situacao <- c(
   "Ativa"          = "#2E7D32",
@@ -136,36 +163,61 @@ fmt_moeda <- label_currency(prefix = "R$ ", big.mark = ".", decimal.mark = ",", 
 ```{r}
 #| label: preparo
 
-df_completo <- df_completo |>
+df_empresas <- df_empresas |>
   left_join(situacao_lookup, by = "situacao_cadastral") |>
-  mutate(
-    situacao = replace_na(situacao, "Não informado"),
-    situacao = factor(situacao, levels = niveis_situacao)
-  )
-
-df_socios <- df_socios |>
+  left_join(motivo_lookup, by = "motivo_situacao_cadastral") |>
   left_join(tipo_socio_lookup, by = "tipo_socio") |>
   left_join(qualificacao_lookup, by = "qualificacao_socio") |>
+  left_join(simples_mei_lookup, by = c("opcao_simples" = "opcao")) |>
+  rename(simples_desc = opcao_desc) |>
+  left_join(simples_mei_lookup, by = c("opcao_mei" = "opcao")) |>
+  rename(mei_desc = opcao_desc) |>
   mutate(
+    situacao      = replace_na(situacao, "Não informado"),
+    situacao      = factor(situacao, levels = niveis_situacao),
+    motivo_desc   = coalesce(motivo_desc, paste("Código", motivo_situacao_cadastral)),
+    motivo_desc   = if_else(is.na(motivo_situacao_cadastral), "Não informado", motivo_desc),
     tipo_socio_desc   = replace_na(tipo_socio_desc, "Não informado"),
-    qualificacao_desc = coalesce(qualificacao_desc, paste("Código", qualificacao_socio))
+    qualificacao_desc = coalesce(qualificacao_desc, paste("Código", qualificacao_socio)),
+    simples_desc  = replace_na(simples_desc, "Não informado"),
+    mei_desc      = replace_na(mei_desc, "Não informado"),
+    # Porte/maturidade fiscal: MEI e Simples têm dinâmica de sobrevivência
+    # diferente de empresas do regime normal.
+    porte_fiscal = case_when(
+      opcao_mei == "1"                    ~ "MEI",
+      opcao_simples == "1"                ~ "Simples Nacional",
+      opcao_simples == "0" | opcao_mei == "0" ~ "Regime normal / não optante",
+      TRUE                                 ~ "Não informado"
+    ),
+    # Diversificação de atuação: quantos CNAEs secundários a empresa declara
+    n_cnaes_secundarios = if_else(
+      is.na(cnae_fiscal_secundaria) | cnae_fiscal_secundaria == "",
+      0L,
+      str_count(cnae_fiscal_secundaria, ",") + 1L
+    )
   )
 
 # Resumo do quadro societário por empresa (1 linha por CNPJ)
-socios_resumo <- df_socios |>
+socios_resumo <- df_empresas |>
+  filter(!is.na(nome_socio)) |>
   group_by(cnpj) |>
   summarise(
     n_socios                = n(),
     n_socios_pf             = sum(tipo_socio_desc == "Pessoa Física"),
     n_socios_pj             = sum(tipo_socio_desc == "Pessoa Jurídica"),
     tem_socio_administrador = any(qualificacao_desc == "Sócio-Administrador"),
-    nomes_socios            = paste(nome_socio, collapse = "; "),
+    nomes_socios            = paste(unique(nome_socio), collapse = "; "),
     .groups = "drop"
   )
 
-# Base única de análise: 1 linha por empresa, com dados de estabelecimento +
-# sócios. LEFT JOIN preserva empresas sem sócio cadastrado na amostra.
-df_analise <- df_completo |>
+# Base única de análise: 1 linha por empresa (estabelecimento + cadastro
+# fiscal), com o quadro societário resumido à parte. distinct() garante 1
+# linha por CNPJ mesmo que o arquivo completo tenha 1 linha por sócio.
+empresas_unicas <- df_empresas |>
+  distinct(cnpj, .keep_all = TRUE) |>
+  select(-nome_socio, -tipo_socio, -qualificacao_socio, -tipo_socio_desc, -qualificacao_desc)
+
+df_analise <- empresas_unicas |>
   left_join(socios_resumo, by = "cnpj") |>
   mutate(
     n_socios                = replace_na(n_socios, 0),
@@ -185,6 +237,8 @@ n_total       <- nrow(df_analise)
 n_ativa       <- sum(df_analise$situacao == "Ativa")
 n_baixada     <- sum(df_analise$situacao == "Baixada")
 n_susp_inapta <- sum(df_analise$situacao %in% c("Suspensa", "Inapta"))
+n_baixa_voluntaria <- sum(df_analise$situacao == "Baixada" &
+                             df_analise$motivo_situacao_cadastral == "1", na.rm = TRUE)
 pct_ativa     <- percent(n_ativa / n_total, accuracy = 0.1)
 pct_baixada   <- percent(n_baixada / n_total, accuracy = 0.1)
 ```
@@ -192,8 +246,10 @@ pct_baixada   <- percent(n_baixada / n_total, accuracy = 0.1)
 ::: {.callout-important appearance="simple"}
 Das **`r n_total`** empresas egressas da incubadora analisadas, **`r n_ativa`**
 (`r pct_ativa`) seguem com situação cadastral **Ativa**, **`r n_baixada`** (`r pct_baixada`)
-já tiveram o CNPJ **Baixado**, e **`r n_susp_inapta`** estão **Suspensas ou Inaptas** — situações
-recuperáveis mediante regularização junto à Receita Federal.
+já tiveram o CNPJ **Baixado** — das quais **`r n_baixa_voluntaria`** por encerramento
+*voluntário* (as demais têm outros motivos, incluindo baixa de ofício; ver a seção "Motivo
+da situação cadastral" a seguir) — e **`r n_susp_inapta`** estão **Suspensas ou Inaptas**,
+situações recuperáveis mediante regularização junto à Receita Federal.
 :::
 
 ```{r}
@@ -216,6 +272,74 @@ df_analise |>
   theme(panel.grid.major.y = element_blank(), panel.grid.minor = element_blank())
 ```
 
+## Motivo da situação cadastral
+
+Entender *por que* uma empresa saiu do status Ativa é bem diferente de apenas saber que ela
+saiu: um encerramento voluntário reflete uma decisão dos sócios, enquanto uma baixa ou
+inaptidão de ofício costuma indicar problemas de regularidade fiscal (omissão de declarações,
+não localização etc.). Como nem todos os códigos de motivo têm tradução confiável disponível
+publicamente (ver nota técnica ao final), tratamos aqui apenas as empresas **não ativas**.
+
+```{r}
+#| label: tbl-motivo
+
+df_analise |>
+  filter(situacao != "Ativa") |>
+  count(situacao, motivo_desc, sort = TRUE) |>
+  gt() |>
+  tab_header(title = "Motivo declarado, por situação cadastral (empresas não ativas)") |>
+  cols_label(situacao = "Situação", motivo_desc = "Motivo", n = "Nº de empresas") |>
+  tab_style(style = cell_text(weight = "bold"), locations = cells_column_labels()) |>
+  opt_row_striping()
+```
+
+## Setor de atuação (CNAE)
+
+O CNAE fiscal principal permite segmentar as empresas por setor (tecnologia, saúde,
+alimentos etc.). Mostramos aqui os códigos mais frequentes; para exibir a descrição de cada
+CNAE em vez do código, veja a nota técnica ao final.
+
+```{r}
+#| label: fig-cnae
+#| fig-cap: "CNAE fiscal principal mais frequente entre as empresas egressas"
+
+df_analise |>
+  count(cnae_fiscal_principal, sort = TRUE) |>
+  filter(!is.na(cnae_fiscal_principal)) |>
+  slice_max(n, n = 10) |>
+  ggplot(aes(x = reorder(cnae_fiscal_principal, n), y = n)) +
+  geom_col(fill = "#1565C0", width = 0.6) +
+  scale_y_continuous(breaks = breaks_pretty()) +
+  coord_flip() +
+  labs(x = "CNAE fiscal principal (código)", y = "Número de empresas") +
+  theme_minimal(base_size = 12)
+```
+
+A coluna `n_cnaes_secundarios`, calculada no preparo dos dados, indica quantas atividades
+econômicas secundárias cada empresa declara — uma proxy simples de diversificação de atuação;
+ela aparece na tabela de detalhamento por empresa, a seguir.
+
+## Porte fiscal: Simples Nacional e MEI
+
+A opção por MEI ou Simples Nacional indica o porte/maturidade fiscal da empresa; MEIs e
+optantes do Simples tendem a ter dinâmica de sobrevivência diferente de empresas do regime
+normal.
+
+```{r}
+#| label: tbl-porte-fiscal
+#| tbl-cap: "Situação cadastral por porte fiscal"
+
+df_analise |>
+  count(porte_fiscal, situacao, .drop = FALSE) |>
+  filter(n > 0) |>
+  pivot_wider(names_from = situacao, values_from = n, values_fill = 0) |>
+  gt() |>
+  tab_header(title = "Porte fiscal x situação cadastral") |>
+  cols_label(porte_fiscal = "Porte fiscal") |>
+  tab_style(style = cell_text(weight = "bold"), locations = cells_column_labels()) |>
+  opt_row_striping()
+```
+
 ## Detalhamento por empresa
 
 ```{r}
@@ -223,18 +347,25 @@ df_analise |>
 
 df_analise |>
   arrange(situacao, razao_social) |>
-  select(razao_social, nome_fantasia, situacao, capital_social, bairro, sigla_uf, n_socios) |>
+  select(razao_social, nome_fantasia, situacao, motivo_desc, data_situacao_cadastral,
+         cnae_fiscal_principal, n_cnaes_secundarios, porte_fiscal, capital_social,
+         nome_municipio, sigla_uf, n_socios) |>
   gt() |>
   tab_header(title = "Empresas egressas da incubadora — detalhamento") |>
   fmt_currency(columns = capital_social, currency = "BRL", sep_mark = ".", dec_mark = ",") |>
   cols_label(
-    razao_social   = "Razão social",
-    nome_fantasia  = "Nome fantasia",
-    situacao       = "Situação",
-    capital_social = "Capital social",
-    bairro         = "Bairro",
-    sigla_uf       = "UF",
-    n_socios       = "Nº de sócios"
+    razao_social            = "Razão social",
+    nome_fantasia           = "Nome fantasia",
+    situacao                = "Situação",
+    motivo_desc              = "Motivo",
+    data_situacao_cadastral = "Data da situação",
+    cnae_fiscal_principal   = "CNAE principal",
+    n_cnaes_secundarios      = "Nº CNAEs secund.",
+    porte_fiscal             = "Porte fiscal",
+    capital_social           = "Capital social",
+    nome_municipio           = "Município",
+    sigla_uf                 = "UF",
+    n_socios                 = "Nº de sócios"
   ) |>
   tab_style(
     style = cell_fill(color = "#C8E6C9"),
@@ -253,7 +384,7 @@ df_analise |>
     locations = cells_column_labels()
   ) |>
   opt_row_striping() |>
-  tab_options(table.font.size = px(13))
+  tab_options(table.font.size = px(12))
 ```
 
 ## Capital social por situação
@@ -297,12 +428,13 @@ df_analise |>
 ## Distribuição geográfica
 
 ```{r}
-#| label: fig-bairro
-#| fig-cap: "Empresas egressas por bairro"
+#| label: fig-municipio
+#| fig-cap: "Empresas egressas por município"
 
 df_analise |>
-  count(bairro, sort = TRUE) |>
-  ggplot(aes(x = reorder(bairro, n), y = n)) +
+  count(nome_municipio, sort = TRUE) |>
+  filter(!is.na(nome_municipio)) |>
+  ggplot(aes(x = reorder(nome_municipio, n), y = n)) +
   geom_col(fill = "#1565C0", width = 0.6) +
   scale_y_continuous(breaks = breaks_pretty()) +
   coord_flip() +
@@ -310,18 +442,22 @@ df_analise |>
   theme_minimal(base_size = 12)
 ```
 
-`id_municipio` traz o código IBGE do município (ex.: `2704302` = Maceió), não o nome. Para
-exibir nomes de município/região automaticamente, ver a sugestão de enriquecimento abaixo.
-
 ## Limitações desta análise
 
-- **Amostra pequena**: os arquivos usados aqui têm poucas empresas e baixa sobreposição entre
-  `df_completo` e `df_socios`, o que não reflete a base completa.
+- **Amostra pequena**: o arquivo usado aqui tem poucas empresas, o que não reflete a base
+  completa da incubadora.
 - **Foto única no tempo**: `situacao_cadastral` reflete a data da consulta (`data` na tabela do
   Base dos Dados), não o histórico. Uma empresa "Suspensa" hoje pode ter sido "Ativa" por anos.
+- **Tradução parcial do motivo da situação cadastral**: só mapeamos os dois códigos mais
+  comuns e mais bem documentados (0 e 1); os demais aparecem como "Código NN" até que a
+  tabela oficial completa seja incorporada (ver nota técnica).
 - **Sem vínculo direto com o programa de incubação**: os dados de CNPJ não indicam data de
   entrada/saída da incubadora, turma, área de atuação ou tipo de acompanhamento recebido —
-  isso precisa vir de um cadastro interno da incubadora (ver seção seguinte).
+  isso precisa vir de um cadastro interno da incubadora.
+- **RAIS/CAGED não são join-áveis por CNPJ**: os microdados públicos de vínculos
+  empregatícios (RAIS/CAGED) são anonimizados pelo MTE e não têm coluna de CNPJ; qualquer
+  cruzamento com emprego só é possível como *proxy* por CNAE/município (ver script de
+  consulta).
 
 ## Sugestões de dados adicionais para melhorar a análise
 
@@ -331,31 +467,19 @@ exibir nomes de município/região automaticamente, ver a sugestão de enriqueci
 tibble(
   dado = c(
     "Datas de entrada e saída da incubadora (turma/cohort)",
-    "Motivo e data da situação cadastral (`motivo_situacao_cadastral`, `data_situacao_cadastral`)",
-    "CNAE fiscal principal e secundário",
-    "Opção pelo Simples Nacional / MEI (`br_me_cnpj.simples`)",
     "Vínculos empregatícios (RAIS/CAGED)",
-    "Nome do município (via diretório de municípios)",
     "Taxa de sobrevivência empresarial de referência (SEBRAE/IBGE)",
     "Dados internos da incubadora (mentoria, capital captado, prêmios, se é spin-off de pesquisa)"
   ),
   porque = c(
     "Permite calcular tempo de sobrevivência pós-incubação e comparar turmas entre si — hoje só existe um retrato estático.",
-    "Explica *por que* uma empresa foi baixada/suspensa (encerramento voluntário é bem diferente de baixa de ofício por inadimplência).",
-    "Permite segmentar a análise por setor de atuação (tech, saúde, alimentos etc.), já disponível em `br_me_cnpj.estabelecimentos` mas não incluído na query atual.",
-    "Indica o porte/maturidade fiscal da empresa; MEIs e optantes do Simples têm dinâmica de sobrevivência diferente de empresas maiores.",
-    "Mede impacto econômico real (empregos gerados) além da situação cadastral — disponível como outro dataset no Base dos Dados.",
-    "`id_municipio` é só o código IBGE; um join com o diretório de municípios traz nome, região e porte do município.",
+    "Mede impacto econômico real (empregos gerados) além da situação cadastral — mas só é viável como proxy setorial/regional, já que os microdados públicos não trazem CNPJ.",
     "Contextualiza se a taxa de sobrevivência das empresas incubadas é melhor ou pior que a média do mercado no mesmo período/UF.",
     "É o dado que mais falta: liga a situação cadastral ao histórico *dentro* da incubadora (mentoria recebida, captação, se ainda está no programa)."
   ),
   fonte = c(
     "Cadastro interno da incubadora da UFAL",
-    "Já existe na tabela `br_me_cnpj.estabelecimentos`; basta incluir na query SQL",
-    "Já existe em `br_me_cnpj.estabelecimentos`; basta incluir na query SQL",
-    "Tabela `basedosdados.br_me_cnpj.simples`, join por `cnpj_basico`",
-    "Datasets `br_me_rais` e `br_me_caged` no Base dos Dados",
-    "Tabela `basedosdados.br_bd_diretorios_brasil.municipio`, join por `id_municipio`",
+    "Datasets `br_me_rais` e `br_me_caged` no Base dos Dados (nível CNAE/município, não CNPJ)",
     "Estudos públicos do SEBRAE sobre sobrevivência de empresas no Brasil/Alagoas",
     "Cadastro interno da incubadora da UFAL"
   )
@@ -369,50 +493,44 @@ tibble(
 ```
 
 ::: {.callout-tip collapse="true"}
-### Exemplo: como puxar CNAE, motivo e data da situação, e Simples Nacional na query original
+### Notas técnicas: traduções completas de motivo e CNAE
 
-Estes campos já estão disponíveis nas tabelas usadas no script de consulta
-(`consulta_cnpj_basedosdados.R`) — basta adicionar ao `SELECT`:
-
-```sql
-SELECT
-  est.cnpj,
-  est.nome_fantasia,
-  emp.razao_social,
-  emp.capital_social,
-  est.situacao_cadastral,
-  est.motivo_situacao_cadastral,
-  est.data_situacao_cadastral,
-  est.cnae_fiscal_principal,
-  est.bairro,
-  est.sigla_uf,
-  est.id_municipio,
-  spl.opcao_simples,
-  spl.opcao_mei
-FROM `basedosdados.br_me_cnpj.estabelecimentos` AS est
-INNER JOIN `basedosdados.br_me_cnpj.empresas` AS emp
-  ON est.cnpj_basico = emp.cnpj_basico AND emp.data = DATE('AAAA-MM-DD')
-LEFT JOIN `basedosdados.br_me_cnpj.simples` AS spl
-  ON est.cnpj_basico = spl.cnpj_basico
-WHERE est.cnpj_basico IN (...)
-  AND est.data = DATE('AAAA-MM-DD')
-```
-:::
+Os lookups usados neste relatório para `motivo_situacao_cadastral` (e, se desejar, para
+`cnae_fiscal_principal`) são propositalmente parciais, porque fontes secundárias divergem
+sobre boa parte dos códigos menos comuns. A Receita Federal distribui as tabelas de domínio
+completas e oficiais junto com os Dados Abertos do CNPJ — os arquivos `Motivos.zip` e
+`Cnaes.zip`. O código abaixo baixa e junta essas tabelas automaticamente (ajuste o mês/ano da
+pasta para a competência mais recente disponível em
+<https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/>).
 
 ```{r}
-#| label: municipio-exemplo
+#| label: enriquecimento-oficial
 #| eval: false
-#| echo: true
 
-# Exemplo (não roda automaticamente — requer set_billing_id já configurado):
-# traduz id_municipio para nome do município via o diretório do Base dos Dados.
-library(basedosdados)
+competencia <- "2025-05"  # ajuste para a pasta mais recente disponível
+base_url <- paste0("https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/",
+                    competencia, "/")
 
-municipios <- read_sql("
-  SELECT id_municipio, nome AS nome_municipio, sigla_uf
-  FROM `basedosdados.br_bd_diretorios_brasil.municipio`
-")
+baixar_tabela_dominio <- function(nome_arquivo, col_names) {
+  destino_zip <- tempfile(fileext = ".zip")
+  download.file(paste0(base_url, nome_arquivo), destino_zip, mode = "wb")
+  arquivo <- unzip(destino_zip, exdir = tempdir())
+  read_delim(
+    arquivo, delim = ";", locale = locale(encoding = "Latin1"),
+    col_names = col_names,
+    col_types = cols(.default = col_character())
+  )
+}
 
-df_analise <- df_analise |>
-  left_join(municipios, by = c("id_municipio", "sigla_uf"))
+motivos_oficial <- baixar_tabela_dominio("Motivos.zip", c("motivo_situacao_cadastral", "motivo_desc_oficial"))
+cnaes_oficial   <- baixar_tabela_dominio("Cnaes.zip",   c("cnae_fiscal_principal", "cnae_desc_oficial"))
+
+df_empresas <- df_empresas |>
+  left_join(motivos_oficial, by = "motivo_situacao_cadastral") |>
+  left_join(cnaes_oficial,   by = "cnae_fiscal_principal")
 ```
+
+Depois de rodar, substitua `motivo_desc`/`cnae_fiscal_principal` pelas colunas
+`motivo_desc_oficial`/`cnae_desc_oficial` nos chunks `tbl-motivo` e `fig-cnae` para usar a
+tradução completa e oficial em vez dos lookups parciais definidos no chunk `dicionarios`.
+:::

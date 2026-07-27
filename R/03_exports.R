@@ -1,36 +1,29 @@
 # R/03_exports.R
-# Salva amostras aleatórias de até 5 linhas de df_completo e df_socios
+# Salva amostras aleatórias de até 5 linhas e os dados completos de df_empresas
 
 library(dplyr)
 library(readr)
 
-if (!exists("df_completo") || !exists("df_socios")) {
-  stop("df_completo ou df_socios não encontrados no ambiente. Carregue-os antes de rodar este script.")
+if (!exists("df_empresas")) {
+  stop("df_empresas não encontrado no ambiente. Carregue-o antes de rodar este script.")
 }
 
-n_completo <- min(5, nrow(df_completo))
-n_socios   <- min(5, nrow(df_socios))
+n_empresas <- min(5, nrow(df_empresas))
 
-# Amostras aleatórias
-set.seed( sample(1:10000, 1) )
-df_completo_sample <- df_completo |> slice_sample(n = n_completo)
-df_socios_sample   <- df_socios   |> slice_sample(n = n_socios)
+# Amostra aleatória
+set.seed(sample(1:10000, 1))
+df_empresas_sample <- df_empresas |> slice_sample(n = n_empresas)
 
 # Garante diretório tidy exista
 dir.create("data/data_tidy", showWarnings = FALSE, recursive = TRUE)
 
-# Salvando amostras
-write_csv(df_completo_sample, "data/data_tidy/df_completo_sample.csv")
-write_csv(df_socios_sample,   "data/data_tidy/df_socios_sample.csv")
+# Salvando amostra e dados completos
+write_csv(df_empresas_sample, "data/data_tidy/df_empresas_sample.csv")
+write_csv(df_empresas,        "data/data_tidy/df_empresas.csv")
 
-# Salvando dados completos
-write_csv(df_completo, "data/data_tidy/df_completo.csv")
-write_csv(df_socios,   "data/data_tidy/df_socios.csv")
-
-cat("\nAmostras (5 linhas) salvas em data/data_tidy/\n")
-print(df_completo_sample)
-print(df_socios_sample)
+cat("Amostra (5 linhas) e dados completos salvos em data/data_tidy/\n")
+print(df_empresas_sample)
 
 cat("\n--- Dados completos exportados ---\n")
-cat("df_completo:", nrow(df_completo), "linhas →", "data/data_tidy/df_completo.csv\n")
-cat("df_socios:", nrow(df_socios), "linhas →", "data/data_tidy/df_socios.csv\n")
+cat("df_empresas:", nrow(df_empresas), "linhas →", "data/data_tidy/df_empresas.csv\n")
+
